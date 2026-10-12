@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>秦俑小导游</title>
+  <meta name="description" content="给识字很少的老人和学龄前小朋友使用的西安兵马俑、丽山园语音导览：点一下就有声音，会自动连播并按句显示大字幕。">
+  <meta name="theme-color" content="#18130d">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <!-- iOS：全屏运行 + 主屏幕名称 -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="秦俑小导游">
+  <meta name="application-name" content="秦俑小导游">
+  <link rel="stylesheet" href="styles.css?v=27">
+</head>
+<body>
+  <main id="stage" class="stage">
+    <!-- 主界面只留一个菜单入口；总进度收进抽屉 -->
+    <header class="topbar">
+      <button id="drawerBtn" class="corner-button drawer-button" aria-label="全部地点" aria-expanded="false" aria-controls="drawer">☰</button>
+    </header>
+
+    <div id="scene" class="scene">
+      <div class="scene-shade"></div>
+      <div id="sparkles" class="sparkles" aria-hidden="true"></div>
+      <div class="place">
+        <div id="placeIcon" class="place-icon" aria-hidden="true">🏺</div>
+        <h1 id="placeName">一号坑</h1>
+        <p id="placeHint">👂 听故事</p>
+      </div>
+      <div class="subtitle" aria-hidden="true">
+        <p id="subtitleText"></p>
+      </div>
+      <!-- 整张图都是播放/暂停的点击区：孩子点哪儿都行 -->
+      <button id="scenePlay" class="scene-play" aria-label="播放">
+        <span class="play-symbol" aria-hidden="true">▶</span>
+        <span class="pause-symbol" aria-hidden="true">Ⅱ</span>
+      </button>
+    </div>
+
+    <div class="story-dots" id="storyDots" aria-hidden="true"></div>
+
+    <nav class="big-nav" aria-label="切换地点">
+      <button id="prevBtn" class="nav-button" aria-label="上一个地点"><span aria-hidden="true">◀</span></button>
+      <button id="mainPlay" class="main-button" aria-label="播放故事">
+        <span class="play-symbol" aria-hidden="true">▶</span>
+        <span class="pause-symbol" aria-hidden="true">Ⅱ</span>
+      </button>
+      <button id="nextBtn" class="nav-button" aria-label="下一个地点"><span aria-hidden="true">▶</span></button>
+    </nav>
+
+    <!-- 播放进度：这一段放到哪儿了、总共多长 -->
+    <div class="time-row">
+      <span id="pIndex" class="t-index">第 1/1 段</span>
+      <span id="pTime" class="t-time">0:00 / 0:00</span>
+    </div>
+    <progress id="seek" class="seek" max="1000" value="0" aria-label="播放进度"></progress>
+  </main>
+
+  <span id="netChip" class="net-chip" aria-hidden="true"></span>
+  <div id="offline" class="offline" hidden>📶 已离线，也能听</div>
+
+  <!-- 地点抽屉：家长的遥控器（带贴纸收集 + 选段） -->
+  <div id="drawerMask" class="drawer-mask" hidden></div>
+  <section id="drawer" class="drawer" hidden role="dialog" aria-modal="true" aria-label="全部地点">
+    <div class="drawer-head">
+      <b>去哪里？</b><span class="drawer-note">✅＝听完了</span>
+      <button id="drawerClose" class="close-help" aria-label="收起">×</button>
+    </div>
+    <p id="stageCount" class="drawer-progress" role="status" aria-live="polite">已听完 0/0 段</p>
+    <div id="drawerList" class="drawer-list"></div>
+    <p id="drawerNet" class="drawer-net" role="status" aria-live="polite"></p>
+    <button id="cacheBtn" class="cache-button" hidden>重新下载离线内容</button>
+  </section>
+
+  <section id="welcome" class="welcome" role="dialog" aria-modal="true" aria-label="开始导览">
+    <div class="welcome-card">
+      <div class="hello-mascot" aria-hidden="true">🗿</div>
+      <h2>秦俑小导游</h2>
+      <div class="picture-help" aria-hidden="true"><span>👆</span><b>▶</b><span>👂</span></div>
+      <button id="startBtn" class="start-button" aria-label="开始听讲解"><span aria-hidden="true">▶</span><b>开始听</b></button>
+    </div>
+  </section>
+
+  <!-- 录音打不开时的可见提示 -->
+  <div id="retry" class="retry" hidden>
+    <span id="retryMsg">这段声音没放出来</span>
+    <button id="retryBtn">再试一次</button>
+  </div>
+
+  <audio id="voice" preload="metadata" playsinline webkit-playsinline></audio>
+  <script src="data.js?v=27"></script>
+  <script src="app.js?v=27"></script>
+</body>
+</html>
