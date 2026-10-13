@@ -25,6 +25,8 @@
   /* skip 列表里的地点暂不展示（内容保留在 data.js，删掉 skip 即可恢复） */
   const SKIP = TOUR.skip || [];
   const SPOTS = (TOUR.spots || []).filter((s) => s && SKIP.indexOf(s.id) < 0);
+  /* 进度条元素：render() 里要用（必须在 boot 之前声明，避免暂时性死区） */
+  const seekEl = document.getElementById('seek');
 
   const voice = $('voice');
   const done = new Set(store.get('qin-done', []));      // 「地点id:段号」已听完
@@ -46,8 +48,22 @@
   const currentKey = () => keyOf(state.spot, state.track);
   const spotDone = (i) => tracksOf(SPOTS[i]).every((_, n) => done.has(keyOf(i, n)));
   const totalTracks = () => SPOTS.reduce((n, s) => n + tracksOf(s).length, 0);
-  const doneCount = () => SPOTS.reduce((n, s, i) =>
-    n + tracksOf(s).filter((_, k) => done.has(keyOf(i, k))).length, 0);
+  /* 全部内容的时长之和（秒）。用于告诉家人"这一趟大概要听多久"。 */
+  const totalSeconds = () => SPOTS.reduce((n, sp) =>
+    n + tracksOf(sp).reduce((m, t) => m + (t.dur || 0), 0), 0);
+  const totalMinutes = () => Math.round(totalSeconds() / 60);
+
+  /* 清空"已听完"进度：孩子想再走一遍、或进度被弄脏时用 */
+  function resetProgress() {
+    done.clear();
+    try { localStorage.removeItem('qin-done'); } catch (e) {}
+    store.set('qin-done', []);
+    state.track = 0;
+    speechCancelled = true;
+    if (canSpeak()) { try { window.speechSynthesis.cancel(); } catch (e) {} }
+    render();
+    if (drawerOpen) renderDrawer();
+  }
 
   function markDone() {
     const k = currentKey();
@@ -149,9 +165,19 @@
     try { window.speechSynthesis.onvoiceschanged = pickChineseVoice; } catch (e) {}
   }
 
+  /* 只要调用过 cancel()/pause() 打断朗读，就记下"这是打断，不是念完"。
+     cancel() 会**同步触发上一条的 onend**，如果不区分，
+     每次切换/暂停都会把当前段误记为"听完"——反复几次进度就刷满了。 */
+  let speechCancelled = false;
+  function stopSpeechNow() {
+    if (!canSpeak()) return;
+    speechCancelled = true;
+    try { window.speechSynthesis.cancel(); } catch (e) {}
+  }
+
   function speak(text, onEnd, track) {
     if (!canSpeak()) return false;
-    try { window.speechSynthesis.cancel(); } catch (e) {}
+    stopSpeechNow();
     stopSpeechProgress();
     const u = new SpeechSynthesisUtterance(text || '');
     u.lang = 'zh-CN';
@@ -165,6 +191,8 @@
     const my = gen;
     const finish = (completed) => {
       if (my !== gen) return;
+      /* 被打断的朗读不算念完：不标记"听完"、也不自动进入下一段 */
+      if (speechCancelled) { completed = false; speechCancelled = false; }
       const wasTrack = !!track;
       stopSpeechProgress();
       state.playing = false;
@@ -247,14 +275,23 @@
     wantPlay = playNow !== false;
     playingKey = null;
 
-    if (canSpeak()) { try { window.speechSynthesis.cancel(); } catch (e) {} }
+    if (canSpeak()) stopSpeechNow();
     stopSpeechProgress();
     try { voice.pause(); } catch (e) {}
     state.playing = false;
 
     const src = (track.audio || [])[0];
     expectSrc = src || null;
-    if (!src) { expectSrc = null; if (wantPlay) fallbackSpeak(track, my); render(); return; }
+    if (!src) {
+      expectSrc = null;
+      /* 这一段没有录音 → 立刻按"不可拖"渲染。
+         不能等 speechMode 被置位：语音合成要几百毫秒才开口，
+         那段空档里进度条会带着圆点，看着像能拖（用户就是这么被误导的）。 */
+      state.speechMode = true;
+      if (wantPlay) fallbackSpeak(track, my);
+      render();
+      return;
+    }
 
     if (voice.getAttribute('data-src') === src && voice.readyState >= 1) {
       render();
@@ -329,7 +366,7 @@
     clearTimeout(silentTimer);
     wantPlay = false;
     try { voice.pause(); } catch (e) {}
-    if (canSpeak()) { try { window.speechSynthesis.cancel(); } catch (e) {} }
+    if (canSpeak()) stopSpeechNow();
     stopSpeechProgress();
     state.playing = false;
     playingKey = null;
@@ -385,7 +422,7 @@
     gen++;
     clearTimeout(silentTimer);
     try { voice.pause(); } catch (e) {}
-    if (canSpeak()) { try { window.speechSynthesis.cancel(); } catch (e) {} }
+    if (canSpeak()) stopSpeechNow();
     stopSpeechProgress();
     state.playing = false;
     playingKey = null;
@@ -422,6 +459,14 @@
 
   /* 播放进度：左边是"第几段/共几段"，右边是"已播/总长"。
      录音播的时候用音频真实时长；退化成系统朗读时用 data.js 里的 dur 估算。 */
+  /* 当前这一段的总秒数（录音用真实时长，手机语音用估算 dur） */
+  function seekTotalSeconds() {
+    const d = voice.duration;
+    const item = currentTrack();
+    if (isFinite(d) && d > 0) return d;
+    return (item && item.dur) || 0;
+  }
+
   function onTime() {
     const spot = currentSpot();
     const data = currentTrack();          // 本文件里这个函数就叫 currentTrack
@@ -439,11 +484,10 @@
       return;
     }
 
-    const d = voice.duration;
-    const total = isFinite(d) && d > 0 ? d : est;
+    const total = seekTotalSeconds();
     const cur = voice.currentTime || 0;
     $('pTime').textContent = fmt(cur) + ' / ' + fmt(total);
-    $('seek').value = total > 0 ? String(Math.round(cur / total * 1000)) : '0';
+    if (!state.seeking) $('seek').value = total > 0 ? String(Math.round(cur / total * 1000)) : '0';
     updateSubtitle(cur, total);
   }
 
@@ -492,10 +536,27 @@
     document.body.classList.toggle('playing', state.playing);
     $('mainPlay').setAttribute('aria-label', state.playing ? '暂停' : '播放');
     $('scenePlay').setAttribute('aria-label', state.playing ? '暂停' : '播放');
-    $('stageCount').textContent = '已听完 ' + doneCount() + '/' + totalTracks() + ' 段';
+    /* 手机语音段落：进度条不可拖 —— 隐藏拇指圆点（不留"能拖"的错觉），
+       并主动解释一次，而不是等用户拖了半天才发现拖不动。 */
+    if (seekEl) {
+      const noSeek = !!state.speechMode;
+      seekEl.classList.toggle('seek-off', noSeek);
+      seekEl.setAttribute('aria-disabled', noSeek ? 'true' : 'false');
+      if (noSeek) showSeekHint();
+    }
 
     onTime();
     if (drawerOpen) renderDrawer();
+  }
+
+  /* 手机语音段落不能拖动时，给一次简短说明（不反复弹） */
+  let seekHinted = false;
+  function showSeekHint() {
+    const el = $('seekHint');
+    if (!el || seekHinted) return;          // 整个会话只说一次，不反复打扰
+    seekHinted = true;
+    el.hidden = false;
+    setTimeout(() => { el.hidden = true; }, 3200);
   }
 
   /* ============================================================ 6. 地点抽屉
@@ -529,7 +590,30 @@
 
   /* 抽屉 = 贴纸册 + 遥控器：按「出发前 / 兵马俑 / 丽山园 / 看完后」分组，
      每个地点一行（大图标 = 收集到的贴纸），下面列出它有几段、每段讲什么。 */
+  /* 进度导览：把 9 站画成一条路线带。
+     节点状态：灰（没去过）→ 点亮打勾（去过）→ 金圈（现在这一站）。
+     每个节点可点，直接跳到那一站。 */
+  function renderTourMap() {
+    const el = $('tourMap');
+    if (!el) return;
+    let track = '';
+    SPOTS.forEach((sp, i) => {
+      const here = i === state.spot;
+      const got = spotDone(i);
+      if (i) track += '<span class="tm-link' + (spotDone(i - 1) ? ' on' : '') + '"></span>';
+      track += '<button class="tm-node' + (here ? ' now' : '') + (got ? ' visited' : '') +
+        '" data-jump="' + i + '" data-track="0" title="' + sp.name + '"' +
+        ' aria-label="' + sp.name + (got ? '（已参观）' : '') + (here ? '，当前所在' : '') + '">' +
+        '<span aria-hidden="true">' + (sp.emoji || '📍') + '</span></button>';
+    });
+
+    /* 只画路线本身：节点状态（灰/绿/金圈）已经说明一切。
+       不要再往上加文字进度——和图形表达同一件事，还容易口径不一致。 */
+    el.innerHTML = '<div class="tm-track">' + track + '</div>';
+  }
+
   function renderDrawer() {
+    renderTourMap();
     const phaseName = {};
     (TOUR.phases || []).forEach((p) => { phaseName[p.id] = p.emoji + ' ' + p.name; });
 
@@ -568,16 +652,32 @@
     });
     $('drawerList').innerHTML = html;
 
-    const chip = $('netChip');
-    if (chip.dataset.cached === '1') $('drawerNet').textContent = '📶 全部已下载，可以离线用';
-    else if (!navigator.onLine) $('drawerNet').textContent = '📶 当前离线，有些内容可能还没下载';
-    else if (cacheState === 'failed') $('drawerNet').textContent = '⚠️ 离线内容没下完，请重试';
-    else if (cacheTotal) $('drawerNet').textContent = '⏳ 正在下载 ' + cacheDone + '/' + cacheTotal + '，先别断网';
-    else $('drawerNet').textContent = '⏳ 正在准备离线内容…';
+    $('drawerNet').textContent = cacheStatusText();
     $('cacheBtn').hidden = cacheState !== 'failed' || !navigator.onLine;
   }
 
+  /* 一次性文字确认：借用欢迎卡的状态行位置（欢迎页此时通常已关闭，就退化成短暂提示） */
+  let flashTimer = null;
+  function flashDrawerHint(text) {
+    const el = $('drawerNet');
+    if (!el) return;
+    el.textContent = text;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => { if (drawerOpen) renderDrawer(); }, 4000);
+  }
+
+  /* 离线状态文案：抽屉底部和欢迎卡共用同一份，避免两处说法不一致 */
+  function cacheStatusText() {
+    if ($('netChip').dataset.cached === '1') return '✅ 已下载完，没信号也能听';
+    if (!navigator.onLine) return '⚠️ 当前离线，有些内容可能还没下载';
+    if (cacheState === 'failed') return '⚠️ 离线内容没下完，请重试';
+    if (cacheTotal) return '⏳ 正在下载 ' + cacheDone + '/' + cacheTotal + '，先别断网';
+    return '⏳ 正在准备离线内容…';
+  }
+
   function updateOfflineNotice() {
+    const wn = $('welcomeNet');
+    if (wn) wn.textContent = cacheStatusText();
     const offline = $('offline');
     offline.hidden = navigator.onLine;
     offline.textContent = $('netChip').dataset.cached === '1'
@@ -662,7 +762,13 @@
     $('drawerClose').addEventListener('click', closeDrawer);
     $('drawerMask').addEventListener('click', closeDrawer);
     $('cacheBtn').addEventListener('click', startOfflineCache);
-    $('drawerList').addEventListener('click', (e) => {
+    /* 清空进度要确认一下，避免老人误触把贴纸册清掉 */
+    $('resetBtn').addEventListener('click', () => {
+      if (!done.size) { $('drawerNet').textContent = '还没有听过任何一段'; return; }
+      if (window.confirm('清空"已听完"的记录，从头再走一遍？')) resetProgress();
+    });
+    /* 绑在抽屉整体上：地点列表和顶部路线带的节点都能点 */
+    $('drawer').addEventListener('click', (e) => {
       const item = e.target.closest('[data-jump]');
       if (!item) return;
       unlock();
@@ -722,7 +828,14 @@
       releaseWake();
     });
     voice.addEventListener('ended', () => {
-      if (playingKey && playingKey !== currentKey()) return;   // 不是这一段，忽略
+      /* 只有"我们确实播放过、且播放的正是当前这一段"才算听完。
+         不能像以前那样放行 playingKey 为空的情况——那会把没播过的段落也记成已听。 */
+      const key = currentKey();
+      const track = currentTrack();
+      if (!key || !track) return;
+      if (!(track.audio || []).length) return;      // 没有录音的段落不走 audio 路径
+      if (playingKey !== key) return;               // 不是这一段（含 playingKey 为空的误触发）
+      if (voice.duration && isFinite(voice.duration) && voice.currentTime < voice.duration - 0.35) return;
       markDone();
       state.playing = false;
       releaseWake();
@@ -766,6 +879,56 @@
     voice.addEventListener('timeupdate', onTime);
     voice.addEventListener('loadedmetadata', onTime);
     voice.addEventListener('seeked', onTime);
+
+    /* 拖动进度条跳转。要点：
+       ① 拖动过程中暂停 timeupdate 覆盖，否则滑块会被"弹回去"；
+       ② 松手后如果原来在播，就继续播；
+       ③ 手机语音模式没有时间轴，拖动无效（给出不支持的提示也没必要，直接忽略）。 */
+    const seekStart = () => {
+      /* 手机语音（TTS）没有可定位的时间轴：
+         既不能拖，也要**明确告诉用户不能拖**，否则会一直"拖不动还闪烁"。 */
+      if (state.speechMode) {
+        state.seeking = false;                            // 确保不会被 timeupdate 反复改写
+        showSeekHint();
+        return;
+      }
+      state.seeking = true;
+      state.seekWasPlaying = state.playing;
+      /* iOS 提醒：拖动中如果音频继续跑，指头和声音会对不上，先停住再说 */
+      try { voice.pause(); } catch (e) {}
+    };
+    const seekMove = () => {
+      if (!state.seeking || state.speechMode) return;
+      const total = seekTotalSeconds();
+      if (total > 0) {
+        $('pTime').textContent = fmt(total * (+seekEl.value / 1000)) + ' / ' + fmt(total);
+      }
+    };
+    const seekEnd = () => {
+      if (!state.seeking) return;
+      state.seeking = false;
+      if (state.speechMode) return;
+      const total = seekTotalSeconds();
+      if (total > 0) {
+        try { voice.currentTime = total * (+seekEl.value / 1000); } catch (e) {}
+      }
+      /* 松手后按原状态继续：原来在播就接着播，原来暂停就停在拖到的位置 */
+      if (state.seekWasPlaying) safePlay(gen);
+      else { state.playing = false; render(); }
+    };
+    seekEl.addEventListener('pointerdown', seekStart);
+    seekEl.addEventListener('mousedown', seekStart);
+    seekEl.addEventListener('touchstart', seekStart, { passive: true });
+    seekEl.addEventListener('input', seekMove);
+    seekEl.addEventListener('change', seekMove);
+    /* 关键：松手要绑在 document 上。
+       绑在滑块上时，手指滑出滑块范围后 pointerup 不会在滑块上触发，
+       seekEnd 就永远不执行 —— 表现就是"松手后又弹回原来的进度"。 */
+    document.addEventListener('pointerup', seekEnd);
+    document.addEventListener('pointercancel', seekEnd);
+    document.addEventListener('mouseup', seekEnd);
+    document.addEventListener('touchend', seekEnd);
+    document.addEventListener('touchcancel', seekEnd);
 
     voice.addEventListener('waiting', () => document.body.classList.add('buffering'));
     voice.addEventListener('canplay', () => document.body.classList.remove('buffering'));
@@ -828,6 +991,11 @@
     updateOfflineNotice();
     $('sparkles').innerHTML = '<i>✨</i><i>⭐</i><i>✨</i>';
 
+    /* 把总时长告诉用户：欢迎卡上写"全程约 N 分钟"，抽屉里也标一份 */
+    const mins = totalMinutes();
+    $('welcomeTotal').textContent = '全程约 ' + mins + ' 分钟 · 共 ' + totalTracks() + ' 段';
+    $('drawerTotal').textContent = '全程约 ' + mins + ' 分钟';
+
     /* 欢迎页每次都显示：iOS 上「没有用户手势就调 play()」会被拒绝，
        让用户（或孩子）点一次「开始听」是最稳的做法，也能避免"点了没反应"。 */
     play(false);                        // 预载第一段（只加载，不出声）
@@ -851,6 +1019,7 @@
           } else if (ev.data.type === 'cache-ready') {
             cacheState = 'ready';
             cacheDone = cacheTotal = ev.data.total || cacheTotal;
+            if ($('netChip').dataset.cached !== '1') flashDrawerHint('离线内容已备好，没信号也能听');
             $('netChip').dataset.cached = '1';
           } else if (ev.data.type === 'cache-incomplete') {
             cacheState = 'failed';

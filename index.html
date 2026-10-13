@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="秦俑小导游">
   <meta name="application-name" content="秦俑小导游">
-  <link rel="stylesheet" href="styles.css?v=29">
+  <link rel="stylesheet" href="styles.css?v=42">
 </head>
 <body>
   <main id="stage" class="stage">
@@ -58,23 +58,28 @@
       <span id="pIndex" class="t-index">第 1/1 段</span>
       <span id="pTime" class="t-time">0:00 / 0:00</span>
     </div>
-    <progress id="seek" class="seek" max="1000" value="0" aria-label="播放进度"></progress>
+    <input type="range" id="seek" class="seek" min="0" max="1000" value="0" step="1"
+           aria-label="播放进度，可左右拖动" title="拖动可跳到任意位置">
+    <p id="seekHint" class="seek-hint" role="status" aria-live="polite" hidden>这段用手机朗读，进度不能拖</p>
   </main>
 
-  <span id="netChip" class="net-chip" aria-hidden="true"></span>
+  <!-- 离线状态载体：不再显示小圆点（容易被看成装饰），状态改在抽屉和欢迎卡上用文字说明 -->
+  <span id="netChip" hidden></span>
   <div id="offline" class="offline" hidden>📶 已离线，也能听</div>
 
   <!-- 地点抽屉：家长的遥控器（带贴纸收集 + 选段） -->
   <div id="drawerMask" class="drawer-mask" hidden></div>
   <section id="drawer" class="drawer" hidden role="dialog" aria-modal="true" aria-label="全部地点">
     <div class="drawer-head">
-      <b>去哪里？</b><span class="drawer-note">✅＝听完了</span>
+      <b>去哪里？</b><span id="drawerTotal" class="drawer-note"></span>
       <button id="drawerClose" class="close-help" aria-label="收起">×</button>
     </div>
-    <p id="stageCount" class="drawer-progress" role="status" aria-live="polite">已听完 0/0 段</p>
+    <!-- 进度导览：一眼看出"走到哪一站了、哪些去过" -->
+    <div id="tourMap" class="tour-map" role="group" aria-label="参观进度"></div>
     <div id="drawerList" class="drawer-list"></div>
     <p id="drawerNet" class="drawer-net" role="status" aria-live="polite"></p>
     <button id="cacheBtn" class="cache-button" hidden>重新下载离线内容</button>
+    <button id="resetBtn" class="reset-button">重来一次（清空已听进度）</button>
   </section>
 
   <section id="welcome" class="welcome" role="dialog" aria-modal="true" aria-label="开始导览">
@@ -83,6 +88,8 @@
       <h2>秦俑小导游</h2>
       <div class="picture-help" aria-hidden="true"><span>👆</span><b>▶</b><span>👂</span></div>
       <button id="startBtn" class="start-button" aria-label="开始听讲解"><span aria-hidden="true">▶</span><b>开始听</b></button>
+      <p id="welcomeTotal" class="welcome-total"></p>
+      <p id="welcomeNet" class="welcome-net">⏳ 正在准备离线内容…</p>
       <p class="welcome-hint">点屏幕任意位置都可以开始</p>
     </div>
   </section>
@@ -94,7 +101,7 @@
   </div>
 
   <audio id="voice" preload="metadata" playsinline webkit-playsinline></audio>
-  <script src="data.js?v=29"></script>
-  <script src="app.js?v=29"></script>
+  <script src="data.js?v=42"></script>
+  <script src="app.js?v=42"></script>
 </body>
 </html>
