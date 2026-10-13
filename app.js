@@ -636,12 +636,25 @@
     $('nextBtn').addEventListener('click', () => { unlock(); changeSpot(state.spot + 1, true); });
 
     /* 第一次的「开始听」：iOS 必须由这次手势解锁 */
-    $('startBtn').addEventListener('click', () => {
+    /* 引导卡：**整张卡任意位置**都能开始，不要求点中按钮。
+       老人和小孩不会瞄准按钮，点哪儿都该有反应。 */
+    let started = false;
+    const startTour = () => {
+      if (started) return;            // 防止卡片和按钮各触发一次
+      started = true;
       unlock();                       // 内部会把 state.unlocked 置为 true（必须在 play 之前）
       state.unlocked = true;
       $('welcome').hidden = true;
       $('stage').inert = false;
       play(true);
+    };
+    $('welcome').addEventListener('click', startTour);
+    $('startBtn').addEventListener('click', startTour);     // 按钮也监听：无障碍和键盘更稳
+    $('welcome').addEventListener('touchend', (e) => { e.preventDefault(); startTour(); }, { passive: false });
+    /* 键盘：回车/空格也能开始 */
+    document.addEventListener('keydown', (e) => {
+      if ($('welcome').hidden) return;
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); startTour(); }
     });
 
     /* 抽屉 */
