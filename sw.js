@@ -5,7 +5,7 @@
  * 对带 Range 的媒体请求返回缓存切片，保证 iOS Safari 离线播放。
  * 激活新版本时只清理本项目的旧缓存，不影响同域的其它项目。
  */
-const VERSION = 'v28';                          // ★ 改了讲解词/图片/音频后 +1
+const VERSION = 'v29';                          // ★ 改了讲解词/图片/音频后 +1
 const CACHE = 'qin-tour-' + VERSION;
 const PREFIX = 'qin-tour-';                    // 只清理自己，别动同域其它项目
 
