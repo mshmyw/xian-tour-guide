@@ -22,7 +22,7 @@ button:disabled { opacity: .2; box-shadow: none; }
 [hidden] { display: none !important; }
 
 /* ---------------------------------------------------------- 主骨架 */
-.stage { position: relative; min-height: 100dvh; display: grid; grid-template-rows: 1fr auto auto auto auto; background: var(--dark); }
+.stage { position: relative; min-height: 100dvh; display: grid; grid-template-rows: 1fr auto auto auto; background: var(--dark); }
 
 .scene {
   position: relative; min-height: 0; overflow: hidden; isolation: isolate;
@@ -43,11 +43,11 @@ button:disabled { opacity: .2; box-shadow: none; }
 .place { position: relative; text-align: center; padding: 0 20px; }
 .place-icon { font-size: 2.6rem; }
 .place h1 { margin: 2px 0; font-size: clamp(2.15rem, 10vw, 4rem); line-height: 1; text-shadow: 0 6px 20px #000; text-wrap: balance; }
-.place p { margin: 10px 0 0; font-size: 1.25rem; font-weight: 800; color: #ffe4a9; }
+.place p { margin: 10px 0 0; font-size: 1.25rem; font-weight: 800; color: #ffe4a9; text-wrap: balance; }
+/* 字幕常显、暂停时不消失只变淡：老人可以停下来读完、跟家人讨论。
+   没内容时（还没开始播）靠 :empty 收起来。 */
 .subtitle { position: relative; z-index: 2; margin-top: 14px; display: flex; justify-content: center;
-  opacity: 0; transform: translateY(8px); transition: opacity .18s ease, transform .18s ease; pointer-events: none; }
-/* 暂停时字幕不消失，只变淡：老人可以停下来读完、跟家人讨论 */
-.subtitle { opacity: .72; transform: none; }
+  opacity: .72; transform: none; transition: opacity .18s ease, transform .18s ease; pointer-events: none; }
 .subtitle:empty { opacity: 0; }
 .playing .subtitle { opacity: 1; transform: translateY(0); }
 .subtitle p { max-width: 680px; margin: 0; padding: 10px 16px; border-radius: 16px; background: #000000b8;
@@ -67,12 +67,6 @@ button:disabled { opacity: .2; box-shadow: none; }
   /* 顶部一层很淡的渐变：按钮压在浅色照片上也看得清 */
   background: linear-gradient(180deg, #00000080, #0000); }
 .topbar > * { pointer-events: auto; }
-
-.story-dots { min-height: 20px; display: flex; align-items: center; justify-content: center; gap: 8px; }
-.story-dots { padding: 10px 8px 4px; }
-.story-dot { width: 12px; height: 12px; border-radius: 50%; background: #5b5041; }
-.story-dot.done { background: #77c78c; }
-.story-dot.active { width: 28px; border-radius: 9px; background: var(--gold); }
 
 /* ---------------------------------------------------------- 播放进度（时间） */
 .time-row { display: flex; align-items: center; justify-content: space-between;
@@ -94,16 +88,6 @@ button:disabled { opacity: .2; box-shadow: none; }
 .seek::-moz-range-thumb { width: 26px; height: 26px; border-radius: 50%; background: var(--gold); border: 3px solid #18130d; }
 .seek:active::-webkit-slider-thumb { transform: scale(1.15); }
 
-/* 手机语音段落：不能拖，就**不要显示可拖的拇指圆点**——
-   否则是"看起来能交互"的错觉。只留一条进度带，如实显示念到哪了。 */
-.seek-off { opacity: .55; pointer-events: none; cursor: default; }
-.seek-off::-webkit-slider-thumb { display: none; opacity: 0; }
-.seek-off::-moz-range-thumb { display: none; opacity: 0; }
-/* 浮动在控制区上方，出现时不挤动布局 */
-.seek-hint { position: absolute; z-index: 4; left: 50%; transform: translateX(-50%);
-  bottom: calc(206px + var(--safe-bottom)); margin: 0; padding: 7px 14px; border-radius: 999px;
-  background: #000000b8; font-size: .9rem; font-weight: 800; color: #ffd98f; white-space: nowrap; }
-
 /* 抽屉头部的说明文字 */
 .drawer-note { margin-left: 10px; font-size: .9rem; font-weight: 400; color: #c9bfa9; }
 
@@ -118,8 +102,15 @@ button:disabled { opacity: .2; box-shadow: none; }
 .playing .pause-symbol { display: inline; }
 .buffering .main-button { animation: pulse 1s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { transform: scale(1) } 50% { transform: scale(1.06) } }
+/* 一站讲完、不再自动跳下一站：右侧箭头**轻晃两下就停**（1.6s × 2）。
+   原来写的是 infinite —— 一个永远在动的元素，等于把"自动跳"换成视觉版拽人，
+   而且景区里该看的是坑，不是手机。
+   :not(:disabled) 是必须的：最后一站时右箭头本来就是禁用的（opacity .2），
+   别让一个灰掉的按钮在那儿晃。 */
+.ready-next #nextBtn:not(:disabled) { animation: nudge 1.6s ease-in-out 2; }
+@keyframes nudge { 0%, 100% { transform: none } 50% { transform: translateX(7px) } }
 
-/* 左上角唯一入口：全部地点 */
+/* 右上角唯一入口：全部地点（放右上角是为了避开顶部居中的地点名与图标） */
 .corner-button { width: 56px; height: 56px; border: 2px solid #ffffff2e; border-radius: 50%;
   background: #18130dcc; font-size: 1.5rem; font-weight: 900; backdrop-filter: blur(6px); }
 .corner-button:active { transform: scale(.94); }
@@ -160,26 +151,22 @@ button:disabled { opacity: .2; box-shadow: none; }
 /* 阶段小标题：出发前 / 兵马俑 / 丽山园 / 看完后 */
 .d-phase { margin: 10px 4px 2px; font-size: 1.05rem; font-weight: 900; color: var(--gold); letter-spacing: .06em; }
 .d-phase:first-child { margin-top: 0; }
-.d-item { border: 2px solid #ffffff1a; border-radius: 20px; background: #3a3125; overflow: hidden; }
+/* 每个地点一张卡、一个按钮：图标 + 地名 + 这段的标题 */
+.d-item { display: grid; grid-template-columns: 56px 1fr 40px; align-items: center; gap: 12px;
+  width: 100%; min-height: 84px; padding: 10px 16px; border: 2px solid #ffffff1a; border-radius: 20px;
+  background: #3a3125; text-align: left; }
 .d-item.active { border-color: var(--gold); background: #4a3c22; }
-.d-head { display: grid; grid-template-columns: 64px 1fr 44px; align-items: center; gap: 12px;
-  width: 100%; min-height: 78px; padding: 8px 16px; border: 0; background: transparent; text-align: left; }
 /* 收集到的「贴纸」：听完的地方图标会变大变亮 */
 .d-emoji { font-size: 2.1rem; text-align: center; filter: grayscale(.7); opacity: .6; transition: opacity .3s ease, transform .3s ease; }
 .d-item.finished .d-emoji { font-size: 2.6rem; filter: none; opacity: 1; transform: scale(1.06); }
 .d-item.active .d-emoji { filter: none; opacity: 1; }
-.d-name { font-size: 1.35rem; font-weight: 800; }
+.d-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.d-name { font-size: 1.3rem; font-weight: 800; }
 .d-item.finished .d-name { color: #b7e6c1; }
+.d-sub { font-size: .95rem; color: #b9ae9a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-item.finished .d-sub { color: #8fc79b; }
+.d-item.active .d-sub { color: #ffd98f; }
 .d-mark { font-size: 1.5rem; text-align: right; }
-/* 每段一个小按钮：家长想重听某一段时直接点 */
-.d-segs { display: flex; flex-direction: column; gap: 6px; padding: 0 12px 12px 12px; }
-.d-seg { display: grid; grid-template-columns: 34px 1fr; align-items: center; gap: 10px;
-  min-height: 52px; padding: 6px 12px; border: 0; border-radius: 14px; background: #ffffff10; text-align: left; }
-.d-seg.got { background: #77c78c22; }
-.d-seg.now { outline: 2px solid var(--gold); }
-.d-segno { font-size: 1.15rem; font-weight: 900; color: var(--gold); text-align: center; }
-.d-segname { font-size: 1.08rem; }
-.d-seg.got .d-segno::after { content: "✓"; margin-left: 2px; color: #7bd18f; }
 .drawer-net { margin: 12px 0 0; text-align: center; font-size: 1.05rem; color: #ffe4a9; }
 /* 清空进度：低调但可点，避免误触 */
 .reset-button { width: 100%; min-height: 52px; margin-top: 10px; border: 2px solid #ffffff26; border-radius: 16px;
@@ -190,7 +177,7 @@ button:disabled { opacity: .2; box-shadow: none; }
 
 .offline { position: fixed; z-index: 25; left: 50%; top: calc(14px + var(--safe-top)); transform: translateX(-50%); padding: 9px 14px; border-radius: 999px; background: #fff3d7; color: #25190d; font-weight: 800; white-space: nowrap; }
 
-/* 这台手机没有语音时：字幕常显，让人至少能看字 */
+/* 录音打不开、只剩文字时：字幕常显，让人至少能看字 */
 .no-speech .subtitle { opacity: 1; transform: none; }
 
 /* ---------------------------------------------------------- 弹层 */
@@ -229,22 +216,19 @@ button:disabled { opacity: .2; box-shadow: none; }
 
 /* ---------------------------------------------------------- 适配 */
 @media (orientation: landscape) and (max-height: 560px) {
-  .stage { grid-template-columns: 1fr 230px; grid-template-rows: 1fr auto auto auto; }
-  .scene { grid-row: 1 / 5; }
+  .stage { grid-template-columns: 1fr 230px; grid-template-rows: 1fr auto auto; }
+  .scene { grid-row: 1 / 4; }
   .time-row { grid-column: 2; }
   .seek { grid-column: 2; width: calc(100% - 24px); margin-inline: 12px; }
   .big-nav { grid-column: 2; padding-inline: 8px; gap: 6px; }
   .nav-button { width: 58px; height: 58px; }
   .main-button { width: 78px; height: 78px; }
-  .story-dots { grid-column: 2; }
-
 }
 @media (max-height: 620px) {
   /* 矮屏：控制区更扁，小陶俑跟着下移一点，别悬在半空 */
 
   .place-icon { font-size: 2rem; }
   .place h1 { font-size: clamp(1.7rem, 8vw, 2.6rem); }
-  .story-dots { padding: 6px 8px 2px; }
   /* 矮屏（如 iPhone SE）把时间条压扁，保证大按钮不被挤出屏幕 */
   .time-row { padding-top: 0; }
   .t-index, .t-time { font-size: .95rem; }

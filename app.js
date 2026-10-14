@@ -26,10 +26,12 @@
   const SKIP = TOUR.skip || [];
   const SPOTS = (TOUR.spots || []).filter((s) => s && SKIP.indexOf(s.id) < 0);
   /* 进度条元素：render() 里要用（必须在 boot 之前声明，避免暂时性死区） */
-  const seekEl = document.getElementById('seek');
+  const seekEl = $('seek');
 
   const voice = $('voice');
-  const done = new Set(store.get('qin-done', []));      // 「地点id:段号」已听完
+  /* 进度存储键：段落结构一变就要换名（旧进度与新音频不可比），所以集中写一处 */
+  const DONE_KEY = 'qin-done-v2';
+  const done = new Set(store.get(DONE_KEY, []));          // 「地点id:段号」已听完
 
   const state = {
     spot: 0,
@@ -37,11 +39,12 @@
     playing: false,
     unlocked: false,
     silentChecked: false,
-    speechMode: false
+    finished: false
   };
 
   /* ============================================================ 2. 数据存取 */
-  const tracksOf = (spot) => spot.tracks.concat(spot.kids ? [spot.kids] : []);
+  /* 每个地点只有一段（合并后），保留数组是为了以后想再拆分时不用改这里 */
+  const tracksOf = (spot) => spot.tracks;
   const currentSpot = () => SPOTS[state.spot];
   const currentTrack = () => tracksOf(currentSpot())[state.track];
   const keyOf = (si, ti) => SPOTS[si].id + ':' + ti;
@@ -56,11 +59,9 @@
   /* 清空"已听完"进度：孩子想再走一遍、或进度被弄脏时用 */
   function resetProgress() {
     done.clear();
-    try { localStorage.removeItem('qin-done'); } catch (e) {}
-    store.set('qin-done', []);
+    try { localStorage.removeItem(DONE_KEY); } catch (e) {}
+    store.set(DONE_KEY, []);
     state.track = 0;
-    speechCancelled = true;
-    if (canSpeak()) { try { window.speechSynthesis.cancel(); } catch (e) {} }
     render();
     if (drawerOpen) renderDrawer();
   }
@@ -69,7 +70,7 @@
     const k = currentKey();
     if (done.has(k)) return false;              // 已经记过，不重复持久化
     done.add(k);
-    store.set('qin-done', Array.from(done));
+    store.set(DONE_KEY, Array.from(done));
     return true;
   }
 
@@ -84,19 +85,22 @@
   let wakeLock = null;
   let silentTimer = null;
   let drawerOpen = false;
-  let speechStart = 0;
-  let speechTimer = null;
-  let speechKey = null;
   let cacheState = 'waiting';
   let cacheDone = 0;
   let cacheTotal = 0;
 
-  const playWithTimeout = (el, ms) => Promise.race([
-    el.play(),
-    new Promise((_, rej) => setTimeout(() => {
-      const e = new Error('play timeout'); e.name = 'TimeoutError'; rej(e);
-    }, ms || 5000))
-  ]);
+  /* 给 play() 加超时，但不留下"输了比赛还继续跑的定时器"：
+     Promise.race 的那个 setTimeout 不会被清掉，会在 5 秒后空转一次、还可能
+     把一个已经 settle 的 Promise 再 reject 一遍。 */
+  const playWithTimeout = (el, ms) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const e = new Error('play timeout'); e.name = 'TimeoutError'; reject(e);
+    }, ms || 5000);
+    el.play().then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); }
+    );
+  });
 
   /* iOS / 部分安卓必须由「用户手势」里调用 play()，这里做一次静音解锁 */
   function unlock() {
@@ -129,102 +133,6 @@
     }, 1500);
   }
 
-  function stopSpeechProgress() {
-    clearInterval(speechTimer);
-    speechTimer = null;
-    speechStart = 0;
-    speechKey = null;
-    state.speechMode = false;
-  }
-
-  /* 兜底朗读：录音缺失或打不开时，用系统中文语音念。
-     track 存在时，同步更新字幕和估算进度。 */
-  /* 判断这台手机到底能不能朗读。
-     注意：不能用 'speechSynthesis' in window —— 属性存在但值为 undefined 时它也是 true
-     （部分 WebView 就是这样），要用值本身判断。 */
-  const canSpeak = () => ('speechSynthesis' in window)
-    && typeof window.speechSynthesis === 'object' && window.speechSynthesis !== null
-    && typeof SpeechSynthesisUtterance === 'function';
-
-  /* 挑一个中文音色：优先质量较好的（婷婷/美佳/普通话），否则任意中文音色。
-     iOS/安卓自带中文语音，一般都有；真没有时 speak() 会返回 false，由调用方兜底。 */
-  let zhVoice = null;
-  function pickChineseVoice() {
-    try {
-      const vs = speechSynthesis.getVoices() || [];
-      if (!vs.length) return zhVoice;
-      const zh = vs.filter((v) => /zh|cmn|Chinese|中文|普通话/i.test(v.lang + ' ' + v.name));
-      if (!zh.length) { zhVoice = null; return null; }
-      zhVoice = zh.find((v) => /Tingting|婷婷|Meijia|美佳|Xiaoxiao|晓晓|Google 普通话|Chinese \(China\)|zh-CN/i.test(v.name + ' ' + v.lang))
-             || zh[0];
-      return zhVoice;
-    } catch (e) { return zhVoice; }
-  }
-  if (canSpeak()) {
-    pickChineseVoice();
-    try { window.speechSynthesis.onvoiceschanged = pickChineseVoice; } catch (e) {}
-  }
-
-  /* 只要调用过 cancel()/pause() 打断朗读，就记下"这是打断，不是念完"。
-     cancel() 会**同步触发上一条的 onend**，如果不区分，
-     每次切换/暂停都会把当前段误记为"听完"——反复几次进度就刷满了。 */
-  let speechCancelled = false;
-  function stopSpeechNow() {
-    if (!canSpeak()) return;
-    speechCancelled = true;
-    try { window.speechSynthesis.cancel(); } catch (e) {}
-  }
-
-  function speak(text, onEnd, track) {
-    if (!canSpeak()) return false;
-    stopSpeechNow();
-    stopSpeechProgress();
-    const u = new SpeechSynthesisUtterance(text || '');
-    u.lang = 'zh-CN';
-    /* 老人听：慢一点、音调略高（更亲切，也不那么机械）。
-       童声彩蛋再高一些，孩子一听就知道是"小朋友频道"。 */
-    const isKid = !!track && currentSpot().kids === track;
-    u.rate = isKid ? 0.85 : 0.8;
-    u.pitch = isKid ? 1.35 : 1.18;
-    const zh = pickChineseVoice();
-    if (zh) u.voice = zh;
-    const my = gen;
-    const finish = (completed) => {
-      if (my !== gen) return;
-      /* 被打断的朗读不算念完：不标记"听完"、也不自动进入下一段 */
-      if (speechCancelled) { completed = false; speechCancelled = false; }
-      const wasTrack = !!track;
-      stopSpeechProgress();
-      state.playing = false;
-      if (wasTrack && completed) markDone();
-      render();
-      if (completed && onEnd) onEnd();
-    };
-    u.onstart = () => {
-      if (my !== gen) return;
-      state.playing = true;
-      if (track) {
-        state.speechMode = true;
-        speechStart = Date.now() / 1000;
-        speechKey = currentKey();
-        speechTimer = setInterval(onTime, 250);
-      }
-      render();
-    };
-    u.onend = () => finish(true);
-    u.onerror = () => finish(false);
-    try { window.speechSynthesis.speak(u); } catch (e) { return false; }
-    state.playing = true;
-    if (track) {
-      state.speechMode = true;
-      speechStart = Date.now() / 1000;
-      speechKey = currentKey();
-      speechTimer = setInterval(onTime, 250);
-    }
-    render();
-    return true;
-  }
-
   /* 当前"期望播放"的音频地址。
      切段/切地点时会换 src，浏览器会为被中止的旧请求派发 error 事件——
      如果不比对，就会把"旧源中止"误判成"加载失败"，弹出"这段声音没放出来"。 */
@@ -242,12 +150,12 @@
     clearTimeout(failTimer);
     failTimer = setTimeout(() => {
       if (!wantPlay) return;                       // 用户已经暂停/切走
-      if (state.speechMode) return;                // 正在用手机语音念，不算没声音
       if (!voice.paused || (voice.currentTime || 0) > 0.2) return;   // 在响或在走
       if (!expectSrc) return;                      // 当前这一段没有录音
       if (voice.getAttribute('data-src') !== expectSrc) return;      // 已经切到别的段了
       if (voice.error && voice.error.code === 1) return;             // 只是被我们中止的
-      flagAudioFail(true, reason);
+      const t = currentTrack();
+      if (t) showTextOnly(t, reason); else flagAudioFail(true, reason);
     }, 2500);
   }
   function cancelFail() { clearTimeout(failTimer); flagAudioFail(false); }
@@ -272,24 +180,21 @@
 
     clearTimeout(silentTimer);
     flagAudioFail(false);
+    /* 清掉上一次"放不出声音"留下的常显字幕状态（no-speech 只在失败期间该存在） */
+    document.body.classList.remove('no-speech');
+    state.finished = false;          // 又开始播了，"讲完了"的提示收起来
     wantPlay = playNow !== false;
     playingKey = null;
 
-    if (canSpeak()) stopSpeechNow();
-    stopSpeechProgress();
     try { voice.pause(); } catch (e) {}
     state.playing = false;
 
     const src = (track.audio || [])[0];
     expectSrc = src || null;
     if (!src) {
+      /* 数据里这一段落没配录音（正常不会发生）：直接把文字铺出来 */
       expectSrc = null;
-      /* 这一段没有录音 → 立刻按"不可拖"渲染。
-         不能等 speechMode 被置位：语音合成要几百毫秒才开口，
-         那段空档里进度条会带着圆点，看着像能拖（用户就是这么被误导的）。 */
-      state.speechMode = true;
-      if (wantPlay) fallbackSpeak(track, my);
-      render();
+      showTextOnly(track);
       return;
     }
 
@@ -313,7 +218,6 @@
       await playWithTimeout(voice, 5000);
       if (my !== gen) return;
       retryArmed = false;
-      stopSpeechProgress();
       state.playing = true;
       playingKey = currentKey();
       watchSilent();
@@ -328,48 +232,47 @@
       /* 不立刻报警：有些浏览器会先 reject 再正常出声。
          先观察 2.5 秒，确认真的没声音，才提示用户。 */
       waitUntilSilent('录音没打开，点这里重试');
-      setTimeout(() => {
-        if (my !== gen) return;
-        if (!voice.paused || (voice.currentTime || 0) > 0.2 || state.speechMode) return;  // 已经在响
-        fallbackSpeak(currentTrack(), my);        // 真的没声音 → 换手机语音接着讲
-      }, 600);
     }
   }
 
-  /* 录音打不开时的兜底：给出可见提示，并用系统语音接着讲 */
-  /* 屏幕上显示的文字：去掉尖括号里"只念不显示"的内容（如手机号）。
-     必须定义在 fallbackSpeak 之前。 */
+  /* 屏幕上显示的文字：去掉尖括号里"只念不显示"的内容（如手机号）。 */
   const forScreen = (t) => String(t || '').replace(/<[^>]*>/g, '');
 
-  function fallbackSpeak(track, my) {
-    if (state.speechMode && speechKey === currentKey()) return;
-    const ok = speak(track.text, () => { if (my === gen) advance(); }, track);
-    if (ok) {
-      /* 手机上接着念了，就是有声音。
-         这里**不弹任何提示**：用户只关心"有没有在讲"，不关心用的是哪一种声音。
-         保留"点一下播放键可重试"的能力，但不出现在屏幕上。 */
-      retryArmed = true;
-      return;
-    }
-    /* 录音打不开、手机也不能朗读：这才算真的没声音 */
+  /* 一站讲完后，屏幕上**不再给任何引导文案**（原来这里有一句
+     `✅ 点 ▶ 去一号坑`）。理由：
+       · 状态已经说明白了：声音停了、星星撒了、中间大按钮从 Ⅱ 变回 ▶、
+         提示回到中性的「👂 听故事」，右侧箭头还会轻晃两下；
+       · 下一站叫什么，录音结尾的转场句本来就会念（"看完后，我们去三号坑"）；
+       · 最关键的一条：当初取消"播完自动跳下一站"，理由就是"人得先挪到下一个坑，
+         被拽着跑很难受"。屏幕上再挂一句 CTA + 一个一直晃的箭头，等于把自动跳
+         换成了视觉版的拽人。景区里该看的是坑，不是手机。
+     所以这句话是整个删掉的，不是缩短 —— 别再往回加。 */
+
+  /* 录音打不开（或这一段没配录音）：红框说明原因 + 把整段文字铺在屏幕上，
+     点一下播放键就能重试。没有"换手机语音接着念"这条兜底——全部内容都是 mp3。 */
+  function showTextOnly(track, reason) {
     state.playing = false;
-    flagAudioFail(true, '这台手机放不出声音，我把文字显示出来');
+    flagAudioFail(true, reason || '这段录音没打开，我把文字显示出来');
     retryArmed = true;
+    document.body.classList.add('no-speech');
+    render();                                    // 先渲染，再把字幕换成整段文字
     const box = $('subtitleText');
     if (box) box.textContent = forScreen(track.text);
-    document.body.classList.add('no-speech');
-    render();
+  }
+
+  /* 停住声音 + 让所有在途的播放回调作废：gen 一变，旧回调比对不过就自己退出。
+     「用户暂停」和「换地点前先停住」共用这一段，免得两处各写一遍、改一处漏一处。 */
+  function stopAudio() {
+    gen++;
+    clearTimeout(silentTimer);
+    try { voice.pause(); } catch (e) {}
+    state.playing = false;
+    playingKey = null;
   }
 
   function pause() {
-    gen++;
-    clearTimeout(silentTimer);
+    stopAudio();
     wantPlay = false;
-    try { voice.pause(); } catch (e) {}
-    if (canSpeak()) stopSpeechNow();
-    stopSpeechProgress();
-    state.playing = false;
-    playingKey = null;
     releaseWake();
     render();
   }
@@ -378,6 +281,10 @@
     unlock();
     if (state.playing) { pause(); return; }
     if (retryArmed) { retryArmed = false; play(true); return; }   // 点一下直接重试
+    /* 讲完之后点这里 = 从头再讲一遍本站。
+       这是播放键该有的语义（▶ = 再放一遍），不要改成"跳下一站"：
+       要往下走有右侧 ▶ 箭头和滑动（换地点那套操作），两件事分开才讲得清。
+       走到下一个坑的人点它，听到的是刚才那一站 —— 那正是他要的"再听一遍"。 */
     if (voice.getAttribute('data-src') && voice.currentTime > 0 && !voice.ended) {
       safePlay(gen);
       return;
@@ -386,6 +293,11 @@
   }
 
   /* 一段结束 → 自动下一段（调用方已校验归属） */
+  /* 一站讲完就停下，**不自动播下一站**。
+     现场是要走路的：这站听完，人得先挪到下一处，再决定什么时候听。
+     自动跳过去会把人拽着跑（"我还没看完呢，怎么已经讲到下一个坑了"）。
+     所以这里只把"讲完了"标出来，切换交给用户：右侧 ▶ 箭头 / 滑动换地点；
+     中间大按钮则留在"再讲一遍本站"的播放键语义上。 */
   function advance() {
     const spot = currentSpot();
     const tracks = tracksOf(spot);
@@ -396,51 +308,33 @@
       return;
     }
     state.playing = false;
+    state.finished = true;
+    /* 这里必须把 wantPlay 清掉。不清的话，讲完后再切回前台时，
+       visibilitychange 那个分支会以为"还想播"，于是把刚讲完的这一整段
+       从头再放一遍（锁屏解锁就会触发，一段三分多钟）。
+       讲完 = 我们不打算接着播，等用户点按钮。 */
+    wantPlay = false;
     render();
     celebrate();
-    if (state.spot < SPOTS.length - 1) {
-      const finishedSpot = state.spot;
-      const finishedGen = gen;
-      setTimeout(() => {
-        if (gen === finishedGen && state.spot === finishedSpot && !state.playing) {
-          changeSpot(finishedSpot + 1, true);
-        }
-      }, 700);
-    } else {
-      /* 全部听完：画面撒星星 + 出声表扬（孩子不看屏幕也能听到） */
-      state.playing = false;
-      render();
-      setTimeout(() => {
-        if (state.playing) return;
-        speak(TOUR.praise || '全部听完啦，你真棒！');
-      }, 1200);
-    }
   }
 
   /* ============================================================ 4. 切换 */
-  function hardStop() {
-    gen++;
-    clearTimeout(silentTimer);
-    try { voice.pause(); } catch (e) {}
-    if (canSpeak()) stopSpeechNow();
-    stopSpeechProgress();
-    state.playing = false;
-    playingKey = null;
-  }
+  /* 换地点/跳到某站前先停住（wantPlay 不在这里清：紧接着的 play() 会按新目标设好） */
 
   function changeSpot(next, autoplay) {
     next = Math.max(0, Math.min(SPOTS.length - 1, next));
     if (next === state.spot) return;
-    hardStop();
+    stopAudio();
     state.spot = next;
     state.track = 0;
+    state.finished = false;
     closeDrawer();
     render();
     if (autoplay !== false) play(true);
   }
 
   function jumpTo(si, ti) {
-    hardStop();
+    stopAudio();
     state.spot = si;
     state.track = ti || 0;
     closeDrawer();
@@ -448,8 +342,6 @@
     play(true);
   }
 
-  /* 界面上不显示尖括号里的内容（如手机号）：只念给耳朵听。
-     现在界面本来就不渲染正文，这里是给以后加字幕时兜底用的。 */
   /* 秒 → m:ss */
   const fmt = (sec) => {
     if (!isFinite(sec) || sec < 0) sec = 0;
@@ -457,9 +349,8 @@
     return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
   };
 
-  /* 播放进度：左边是"第几段/共几段"，右边是"已播/总长"。
-     录音播的时候用音频真实时长；退化成系统朗读时用 data.js 里的 dur 估算。 */
-  /* 当前这一段的总秒数（录音用真实时长，手机语音用估算 dur） */
+  /* 播放进度：左边"第几段/共几段"（单段地点不显示，见 onTime），右边"已播/总长"。
+     时长优先用音频真实时长，元数据还没加载完时回退到 data.js 里的 dur 估算。 */
   function seekTotalSeconds() {
     const d = voice.duration;
     const item = currentTrack();
@@ -472,17 +363,12 @@
     const data = currentTrack();          // 本文件里这个函数就叫 currentTrack
     if (!data || !spot) return;
     const tracks = tracksOf(spot);
-    const est = data.dur || 0;
 
-    $('pIndex').textContent = '第 ' + (state.track + 1) + '/' + tracks.length + ' 段';
-
-    if (state.speechMode) {
-      const cur = speechStart ? Date.now() / 1000 - speechStart : 0;
-      $('pTime').textContent = fmt(cur) + ' / ' + fmt(est);
-      $('seek').value = est > 0 ? String(Math.min(1000, Math.round(cur / est * 1000))) : '0';
-      updateSubtitle(cur, est);
-      return;
-    }
+    /* 一个地点只有一段时，"第 1/1 段"是废话，直接不显示。
+       这一段也是「以后想再拆分」时唯一会被点亮的显示位
+       （数据模型与 app.js 都保留了多段能力，只是抽屉里没有选段入口）。 */
+    $('pIndex').textContent = tracks.length > 1
+      ? '第 ' + (state.track + 1) + '/' + tracks.length + ' 段' : '';
 
     const total = seekTotalSeconds();
     const cur = voice.currentTime || 0;
@@ -498,11 +384,23 @@
     return clean.match(/[^\u3002！？；!?;]+[\u3002！？；!?;]?/g) || [clean];
   }
 
-  function updateSubtitle(cur, total) {
+  /* 切句只在「当前是哪一段」变化时重算一次：
+     timeupdate 每秒来 4 次，每次都对着 600~700 字重跑一遍正则 + 建数组，
+     老人机上没必要。 */
+  let subtitleCache = null;
+  function subtitleLayout() {
+    const key = state.spot + ':' + state.track;
+    if (subtitleCache && subtitleCache.key === key) return subtitleCache;
     const parts = subtitleParts(currentTrack() && currentTrack().text);
-    if (!parts.length) { $('subtitleText').textContent = ''; return; }
     const weights = parts.map((s) => Math.max(1, s.replace(/[\u3002！？；!?;，,]/g, '').length));
-    const sum = weights.reduce((n, v) => n + v, 0);
+    subtitleCache = { key, parts, weights, sum: weights.reduce((n, v) => n + v, 0) };
+    return subtitleCache;
+  }
+
+  function updateSubtitle(cur, total) {
+    const cache = subtitleLayout();
+    const parts = cache.parts, weights = cache.weights, sum = cache.sum;
+    if (!parts.length) { $('subtitleText').textContent = ''; return; }
     const pos = total > 0 ? Math.max(0, Math.min(1, cur / total)) * sum : 0;
     let acc = 0, index = 0;
     for (let i = 0; i < weights.length; i++) {
@@ -518,45 +416,23 @@
     const spot = currentSpot();
     const track = currentTrack();
     if (!spot || !track) return;
-    const tracks = tracksOf(spot);
 
     $('scene').style.backgroundImage = 'url("images/' + spot.id + '-v2.webp")';
 
     $('placeName').textContent = spot.name;
     $('placeIcon').textContent = spot.emoji || '🏺';
-    $('placeHint').textContent = (state.track === tracks.length - 1 && spot.kids)
-      ? '🎁 小朋友故事' : (state.playing ? '🔊 正在讲' : '👂 听故事');
-
-    $('storyDots').innerHTML = tracks.map((_, i) =>
-      '<i class="story-dot' + (i === state.track ? ' active' : '') +
-      (done.has(keyOf(state.spot, i)) ? ' done' : '') + '"></i>').join('');
+    /* 提示只有两个中性状态，没有"讲完了 / 去下一站"这类引导（见上方说明）。
+       右箭头轻晃两下由 body.ready-next 负责，那是一次性的，不无限晃。 */
+    $('placeHint').textContent = state.playing ? '🔊 正在讲' : '👂 听故事';
+    document.body.classList.toggle('ready-next', !state.playing && state.finished);
 
     $('prevBtn').disabled = state.spot === 0;
     $('nextBtn').disabled = state.spot === SPOTS.length - 1;
     document.body.classList.toggle('playing', state.playing);
     $('mainPlay').setAttribute('aria-label', state.playing ? '暂停' : '播放');
     $('scenePlay').setAttribute('aria-label', state.playing ? '暂停' : '播放');
-    /* 手机语音段落：进度条不可拖 —— 隐藏拇指圆点（不留"能拖"的错觉），
-       并主动解释一次，而不是等用户拖了半天才发现拖不动。 */
-    if (seekEl) {
-      const noSeek = !!state.speechMode;
-      seekEl.classList.toggle('seek-off', noSeek);
-      seekEl.setAttribute('aria-disabled', noSeek ? 'true' : 'false');
-      if (noSeek) showSeekHint();
-    }
-
     onTime();
     if (drawerOpen) renderDrawer();
-  }
-
-  /* 手机语音段落不能拖动时，给一次简短说明（不反复弹） */
-  let seekHinted = false;
-  function showSeekHint() {
-    const el = $('seekHint');
-    if (!el || seekHinted) return;          // 整个会话只说一次，不反复打扰
-    seekHinted = true;
-    el.hidden = false;
-    setTimeout(() => { el.hidden = true; }, 3200);
   }
 
   /* ============================================================ 6. 地点抽屉
@@ -617,36 +493,38 @@
     const phaseName = {};
     (TOUR.phases || []).forEach((p) => { phaseName[p.id] = p.emoji + ' ' + p.name; });
 
+    /* 每个地点只有一段，所以整张卡就是一个按钮：图标 + 地名 + 这段的标题。
+       不再套一层"第几段"——编号和"点哪一段"的层级都没有意义了。 */
     const items = SPOTS.map((s, i) => {
       const here = i === state.spot;
       const finished = spotDone(i);
-      const mark = here ? '▶' : (finished ? '✅' : '·');
-      const segs = tracksOf(s).map((t, k) => {
-        const got = done.has(keyOf(i, k));
-        const label = t.title || ('第 ' + (k + 1) + ' 段');
-        return '<button class="d-seg' + (got ? ' got' : '') +
-          (here && k === state.track ? ' now' : '') + '" data-jump="' + i + '" data-track="' + k + '">' +
-          '<span class="d-segno">' + (k + 1) + '</span>' +
-          '<span class="d-segname">' + label + '</span>' +
-        '</button>';
-      }).join('');
+      /* 卡片右侧只标"当前所在"（▶）。
+         "是否参观过"由顶部路线带表达（绿圈/灰圈），这里再放一个 ✅ 是同一状态画两遍。 */
+      const mark = here ? '▶' : '';
+      const t = tracksOf(s)[0] || {};
       return { phase: s.phase || '', html:
-        '<div class="d-item' + (here ? ' active' : '') + (finished ? ' finished' : '') + '">' +
-          '<button class="d-head" data-jump="' + i + '" data-track="0">' +
-            '<span class="d-emoji" aria-hidden="true">' + (s.emoji || '📍') + '</span>' +
+        '<button class="d-item' + (here ? ' active' : '') + (finished ? ' finished' : '') +
+          '" data-jump="' + i + '">' +
+          '<span class="d-emoji" aria-hidden="true">' + (s.emoji || '📍') + '</span>' +
+          '<span class="d-text">' +
             '<span class="d-name">' + s.name + '</span>' +
-            '<span class="d-mark" aria-hidden="true">' + mark + '</span>' +
-          '</button>' +
-          '<div class="d-segs">' + segs + '</div>' +
-        '</div>' };
+            (t.title ? '<span class="d-sub">' + t.title + '</span>' : '') +
+          '</span>' +
+          '<span class="d-mark" aria-hidden="true">' + mark + '</span>' +
+        '</button>' };
     });
 
-    /* 同一阶段的放在一起，并加上阶段小标题 */
+    /* 同一阶段的放在一起。只有一站的小组不加小标题 ——
+       否则「🎒 出发前」会在小标题和卡片上连着重复两次。 */
+    const phaseSize = {};
+    items.forEach((it) => { phaseSize[it.phase] = (phaseSize[it.phase] || 0) + 1; });
     let html = '', lastPhase = null;
     items.forEach((it) => {
       if (it.phase !== lastPhase) {
-        if (it.phase) html += '<p class="d-phase">' + (phaseName[it.phase] || it.phase) + '</p>';
         lastPhase = it.phase;
+        if (it.phase && phaseSize[it.phase] > 1) {
+          html += '<p class="d-phase">' + (phaseName[it.phase] || it.phase) + '</p>';
+        }
       }
       html += it.html;
     });
@@ -708,8 +586,15 @@
     if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
   }
 
+  let mediaKey = null;                     // 上一次设过锁屏元数据的「地点/段」
   function mediaSession(track, spot) {
     if (!('mediaSession' in navigator) || !track || !spot) return;
+    /* safePlay() 和 audio 的 playing 事件都会调到这里（同一次播放两次）。
+       同一段只设一次元数据即可 —— 下面这些 action handler 是闭包，
+       取的永远是"当前段"，不需要跟着段变重设。 */
+    const key = spot.id + '/' + (track.id || '');
+    if (key === mediaKey) return;
+    mediaKey = key;
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: track.title || spot.name,
@@ -751,11 +636,6 @@
     $('welcome').addEventListener('click', startTour);
     $('startBtn').addEventListener('click', startTour);     // 按钮也监听：无障碍和键盘更稳
     $('welcome').addEventListener('touchend', (e) => { e.preventDefault(); startTour(); }, { passive: false });
-    /* 键盘：回车/空格也能开始 */
-    document.addEventListener('keydown', (e) => {
-      if ($('welcome').hidden) return;
-      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); startTour(); }
-    });
 
     /* 抽屉 */
     $('drawerBtn').addEventListener('click', () => { drawerOpen ? closeDrawer() : openDrawer(); });
@@ -784,9 +664,19 @@
       play(true);
     });
 
+    /* 键盘只用这一个监听：欢迎页与主界面共用（见下方分支）。
+       以前分成两个监听会出问题 —— 同一次空格先 startTour()→play(true)，
+       第二个监听紧接着又 toggle()，把第一段白载两遍。
+       欢迎页还开着时方向键什么都不做：以前会在卡片背后偷偷换站，
+       而且没有用户手势就调 play()，iOS 会直接拒绝。
+       方向键补上 unlock()，和左侧 ◀ ▶ 按钮的行为对齐（以前只有按钮解锁，键盘不出声）。 */
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'ArrowRight') changeSpot(state.spot + 1, true);
-      else if (e.key === 'ArrowLeft') changeSpot(state.spot - 1, true);
+      if (!$('welcome').hidden) {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); startTour(); }
+        return;
+      }
+      if (e.key === 'ArrowRight') { unlock(); changeSpot(state.spot + 1, true); }
+      else if (e.key === 'ArrowLeft') { unlock(); changeSpot(state.spot - 1, true); }
       else if (e.key === ' ') { e.preventDefault(); toggle(); }
       else if (e.key === 'Escape') closeDrawer();
     });
@@ -807,8 +697,14 @@
       if (Date.now() - st > 700) return;
       if (Math.abs(dx) < 70) return;
       if (Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      /* 真滑动：先掐掉浏览器随后补发的那次 click。
+         不掐的话，覆盖整屏的 #scenePlay 会再收到一次 toggle() ——
+         play() 是异步的，这一次 click 要么把刚起来的声音暂停掉，
+         要么让同一段 mp3 被 src+load() 载两遍（弱网下既费流量，又可能误报"没放出来"）。
+         只有滑动才 preventDefault，轻点照旧交给按钮的 click。 */
+      if (typeof e.preventDefault === 'function') e.preventDefault();
       changeSpot(state.spot + (dx < 0 ? 1 : -1), true);
-    }, { passive: true });
+    }, { passive: false });
 
     /* 音频事件：状态只跟着真实事件走 */
     voice.addEventListener('playing', () => {
@@ -848,32 +744,9 @@
       if (expectSrc && src && src !== expectSrc) return;
       if (voice.paused && state.playing) state.playing = false;
 
-      /* 这台手机根本不能朗读：没有兜底手段，立刻把文字显示出来，别让用户干等。
-         提示只保留"红框"一处（由 fallbackSpeak 负责），屏幕上不再叠第二条。 */
-      if (!canSpeak()) {
-        const t0 = currentTrack();
-        if (t0) {
-          /* 真的没声音：红框只保留一处（说明原因），文字直接铺在屏幕上 */
-          flagAudioFail(true, '这台手机放不出声音，我把文字显示出来');
-          retryArmed = true;
-          $('subtitleText').textContent = forScreen(t0.text);
-          document.body.classList.add('no-speech');
-        }
-        render();
-        return;
-      }
-
       render();
-      waitUntilSilent('录音没打开，点这里重试');
-      const my = gen;
-      setTimeout(() => {
-        if (my !== gen) return;
-        if (state.speechMode) return;                              // 已经在用手机语音
-        if (!voice.paused || (voice.currentTime || 0) > 0.2) return;  // 其实在响
-        if (voice.error && voice.error.code === 1) return;          // 被我们中止的
-        const t = currentTrack();
-        if (t && t.audio) fallbackSpeak(t, my);                     // 真的没声音 → 换手机语音
-      }, 600);
+      /* 不立刻弹红框：先观察 2.5 秒，避免把"切换音频瞬间的 error"误报成失败 */
+      waitUntilSilent('这段录音没打开，点这里重试');
     });
     /* 每 ~250ms 更新一次时间；只改两个文本节点，不重绘整页 */
     voice.addEventListener('timeupdate', onTime);
@@ -882,23 +755,15 @@
 
     /* 拖动进度条跳转。要点：
        ① 拖动过程中暂停 timeupdate 覆盖，否则滑块会被"弹回去"；
-       ② 松手后如果原来在播，就继续播；
-       ③ 手机语音模式没有时间轴，拖动无效（给出不支持的提示也没必要，直接忽略）。 */
+       ② 松手后如果原来在播，就继续播。 */
     const seekStart = () => {
-      /* 手机语音（TTS）没有可定位的时间轴：
-         既不能拖，也要**明确告诉用户不能拖**，否则会一直"拖不动还闪烁"。 */
-      if (state.speechMode) {
-        state.seeking = false;                            // 确保不会被 timeupdate 反复改写
-        showSeekHint();
-        return;
-      }
       state.seeking = true;
       state.seekWasPlaying = state.playing;
       /* iOS 提醒：拖动中如果音频继续跑，指头和声音会对不上，先停住再说 */
       try { voice.pause(); } catch (e) {}
     };
     const seekMove = () => {
-      if (!state.seeking || state.speechMode) return;
+      if (!state.seeking) return;
       const total = seekTotalSeconds();
       if (total > 0) {
         $('pTime').textContent = fmt(total * (+seekEl.value / 1000)) + ' / ' + fmt(total);
@@ -907,7 +772,6 @@
     const seekEnd = () => {
       if (!state.seeking) return;
       state.seeking = false;
-      if (state.speechMode) return;
       const total = seekTotalSeconds();
       if (total > 0) {
         try { voice.currentTime = total * (+seekEl.value / 1000); } catch (e) {}
@@ -952,15 +816,18 @@
     /* 拿不到内容时，分两种情况给出「照着做就能好」的提示。 */
     if (!SPOTS.length) {
       const isFile = location.protocol === 'file:';
-      const hasFile = (function () {
-        try { return typeof TOUR === 'object' && TOUR !== null; } catch (e) { return false; }
-      })();
-      /* 诊断信息：出问题时能让用户一句话说清「卡在哪一步」 */
+      /* 诊断信息：出问题时能让用户一句话说清「卡在哪一步」。
+         注意不要再拿 TOUR 判断「data.js 有没有执行」—— TOUR 上面已经被 `|| {}`
+         兜过底，那个判断恒为真，"data.js变量=在" 在任何故障下都成立，等于没写。
+         现在如实报两个数：脚本有没有跑（window.TOUR）、跑出来几处地点。 */
       const loc = (typeof location !== 'undefined' && location) || {};
       const page = String(loc.pathname || loc.href || '').split('/').pop() || '(未知)';
+      const spotCount = (function () {
+        try { return ((window.TOUR && window.TOUR.spots) || []).length; } catch (e) { return '?'; }
+      })();
       const diag = '协议=' + (loc.protocol || '未知') +
                    ' ｜ window.TOUR=' + (window.TOUR ? '有' : '无') +
-                   ' ｜ data.js变量=' + (hasFile ? '在' : '没执行') +
+                   ' ｜ 地点数=' + spotCount +
                    ' ｜ 文件=' + page;
 
       const box = document.createElement('div');
@@ -979,7 +846,6 @@
             '<span>如果刚改过文件，先在浏览器里强制刷新一次（电脑 ⌘/Ctrl + Shift + R）。</span>') +
         '<em class="diag">' + diag + '</em>';
       document.body.appendChild(box);
-      if (!isFile) speak('讲解内容没加载出来，请检查一下 data.js。');
       return;
     }
 

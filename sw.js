@@ -5,7 +5,7 @@
  * 对带 Range 的媒体请求返回缓存切片，保证 iOS Safari 离线播放。
  * 激活新版本时只清理本项目的旧缓存，不影响同域的其它项目。
  */
-const VERSION = 'v42';                          // ★ 改了讲解词/图片/音频后 +1
+const VERSION = 'v51';                          // ★ 改讲解词/图片/音频/页面后 +1（index.html 的 ?v= 必须同步，verify.js 会核对）
 const CACHE = 'qin-tour-' + VERSION;
 const PREFIX = 'qin-tour-';                    // 只清理自己，别动同域其它项目
 
@@ -213,12 +213,8 @@ function baseHeaders(res, len) {
   };
 }
 
-/* 页面可以问版本，排查「为什么还是旧内容」 */
+/* 页面启动后会发 cache-all，把 data.js 引用的音频和图片逐个下进缓存 */
 self.addEventListener('message', (e) => {
-  if (e.data === 'version' && e.source) {
-    e.source.postMessage({ type: 'version', version: VERSION, cache: CACHE });
-    return;
-  }
   if (e.data && e.data.type === 'cache-all' && e.source) {
     const source = e.source;
     const assets = Array.from(new Set(e.data.assets || []));

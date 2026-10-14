@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>秦俑小导游</title>
-  <meta name="description" content="给识字很少的老人和学龄前小朋友使用的西安兵马俑、丽山园语音导览：点一下就有声音，会自动连播并按句显示大字幕。">
+  <meta name="description" content="给识字很少的老人和学龄前小朋友使用的西安兵马俑、丽山园语音导览：点一下就有声音，一站讲完会停下等你，并按句显示大字幕。">
   <meta name="theme-color" content="#18130d">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="秦俑小导游">
   <meta name="application-name" content="秦俑小导游">
-  <link rel="stylesheet" href="styles.css?v=42">
+  <link rel="stylesheet" href="styles.css?v=51">
 </head>
 <body>
   <main id="stage" class="stage">
@@ -42,7 +42,6 @@
       </button>
     </div>
 
-    <div class="story-dots" id="storyDots" aria-hidden="true"></div>
 
     <nav class="big-nav" aria-label="切换地点">
       <button id="prevBtn" class="nav-button" aria-label="上一个地点"><span aria-hidden="true">◀</span></button>
@@ -60,14 +59,13 @@
     </div>
     <input type="range" id="seek" class="seek" min="0" max="1000" value="0" step="1"
            aria-label="播放进度，可左右拖动" title="拖动可跳到任意位置">
-    <p id="seekHint" class="seek-hint" role="status" aria-live="polite" hidden>这段用手机朗读，进度不能拖</p>
   </main>
 
   <!-- 离线状态载体：不再显示小圆点（容易被看成装饰），状态改在抽屉和欢迎卡上用文字说明 -->
   <span id="netChip" hidden></span>
   <div id="offline" class="offline" hidden>📶 已离线，也能听</div>
 
-  <!-- 地点抽屉：家长的遥控器（带贴纸收集 + 选段） -->
+  <!-- 地点抽屉：家长的遥控器（带贴纸收集） -->
   <div id="drawerMask" class="drawer-mask" hidden></div>
   <section id="drawer" class="drawer" hidden role="dialog" aria-modal="true" aria-label="全部地点">
     <div class="drawer-head">
@@ -101,7 +99,7 @@
   </div>
 
   <audio id="voice" preload="metadata" playsinline webkit-playsinline></audio>
-  <script src="data.js?v=42"></script>
-  <script src="app.js?v=42"></script>
+  <script src="data.js?v=51"></script>
+  <script src="app.js?v=51"></script>
 </body>
 </html>
