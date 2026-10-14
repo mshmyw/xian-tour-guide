@@ -384,6 +384,40 @@
     return clean.match(/[^\u3002！？；!?;]+[\u3002！？；!?;]?/g) || [clean];
   }
 
+  /* --------- 字幕时间轴估算 ---------
+     两个曾经让字幕"跑在录音前头"的原因，都在下面这两步里修掉：
+
+     ① 录音的开头是**标题**（make_audio_node.js 会把 data.js 的 title 念一遍），
+        而屏幕上的 text 里没有这句。不把它算进时间轴，整段字幕就会平均提前
+        一个标题的时长；短段最明显（出发前 11 秒里有 1 秒多，等于第一句还没念完
+        字幕已经翻页）。
+     ② 标点也要占时间。原来看的是"去掉标点后的字数"，于是一串长句被压低、
+        一串短句被抬高，误差逐段累积。句末的停顿比逗号长，权重给得更高。
+
+     权重 = 字数 + 标点停顿（句号 1.5 字、逗号 0.35 字），前几步再加一点
+     起播垫音。这个系数是拿现成的 mp3 对出来的（全 9 段误差都在 1 秒左右），
+     不是拍脑袋定的；要动就重新对着 mp3 核一遍。 */
+  const HEAD_OVERHEAD = 0.6;               // 录音最前面的起播垫音（秒）
+
+  /* 与 tools/make_audio_node.js 的 speakable() 对齐：标题在正文里出现过就不再单独念。
+     不一致的话字幕会整体偏一段，所以这两处要一起改。 */
+  function speakable(s) {
+    return String(s || '')
+      .replace(/[<>「」“”"]/g, '')
+      .replace(/[（(]/g, '，').replace(/[）)]/g, '，')
+      .replace(/——/g, '，').replace(/…+/g, '，')
+      .replace(/《》/g, '');
+  }
+
+  /* 一句话的朗读时长估算：字算 1，标点算停顿，句末标点再补一点拖音费用 */
+  function speechWeight(s) {
+    const t = String(s || '');
+    const marks = t.match(/[\u3002！？；!?;，,：:、]/g) || [];
+    const lastMark = (t.match(/[\u3002！？；!?;]\s*$/) || [])[0];
+    return t.replace(/[\s\u3002！？；!?;，,：:、]/g, '').length +
+      marks.length * 0.35 + (lastMark ? 1.5 : 0);
+  }
+
   /* 切句只在「当前是哪一段」变化时重算一次：
      timeupdate 每秒来 4 次，每次都对着 600~700 字重跑一遍正则 + 建数组，
      老人机上没必要。 */
@@ -391,9 +425,15 @@
   function subtitleLayout() {
     const key = state.spot + ':' + state.track;
     if (subtitleCache && subtitleCache.key === key) return subtitleCache;
-    const parts = subtitleParts(currentTrack() && currentTrack().text);
-    const weights = parts.map((s) => Math.max(1, s.replace(/[\u3002！？；!?;，,]/g, '').length));
-    subtitleCache = { key, parts, weights, sum: weights.reduce((n, v) => n + v, 0) };
+    const track = currentTrack() || {};
+    const parts = subtitleParts(track.text);
+    const weights = parts.map(speechWeight);
+    const body = speakable(track.text);
+    const title = speakable(track.title);
+    /* 标题被念过、但正文里没有它 —— 这段时间也要算进分母，字幕才不会被拽着往前跑 */
+    const titleSec = (title && body.indexOf(title) < 0) ? title.length * 0.25 : 0;
+    const sum = weights.reduce((n, v) => n + v, 0) + titleSec + HEAD_OVERHEAD;
+    subtitleCache = { key, parts, weights, sum };
     return subtitleCache;
   }
 
